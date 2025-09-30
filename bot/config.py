@@ -24,6 +24,7 @@ class BotConfig:
     rest_base: str
     ws_market: str
     ws_user: Optional[str] = None
+    per_order_base_qty: Optional[float] = None
     grid_spacing: float = 20.0
     min_levels_per_side: int = 1
     margin_reserve_pct: float = 0.1
@@ -66,6 +67,9 @@ def load_config(path: str | Path) -> BotConfig:
     if missing:
         raise ConfigError(f"Missing config keys: {', '.join(missing)}")
 
+    base_qty_raw = raw.get("per_order_base_qty")
+    base_qty = float(base_qty_raw) if base_qty_raw is not None else None
+
     return BotConfig(
         symbol=str(raw["symbol"]).upper(),
         mode=str(raw["mode"]).upper(),
@@ -82,6 +86,7 @@ def load_config(path: str | Path) -> BotConfig:
         rest_base=str(raw["rest_base"]).rstrip('/'),
         ws_market=str(raw["ws_market"]),
         ws_user=str(raw.get("ws_user") or "wss://fstream.asterdex.com"),
+        per_order_base_qty=base_qty,
         grid_spacing=float(raw.get("grid_spacing", 20.0)),
         min_levels_per_side=int(raw.get("min_levels_per_side", 1)),
         margin_reserve_pct=float(raw.get("margin_reserve_pct", 0.1)),

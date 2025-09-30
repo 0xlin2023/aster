@@ -3,6 +3,7 @@ mode: ONE_WAY
 margin_type: CROSSED
 leverage: 40
 per_order_quote_usd: 240
+per_order_base_qty: 0.001
 grid_spacing: 30
 min_levels_per_side: 1
 margin_reserve_pct: 0.10
@@ -18,4 +19,5 @@ ws_market: wss://fstream.asterdex.com
 ws_user: wss://fstream.asterdex.com
 recv_window: 5000
 dry_run: false
+
 

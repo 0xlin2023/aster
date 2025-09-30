@@ -65,16 +65,14 @@ def build_grid(mid_price: float, cfg: BotConfig, filters: SymbolFilters, levels_
         if buy_price <= 0:
             raise GridComputationError("Computed buy price is non-positive")
 
-        buy_qty = _compute_quantity(cfg.per_order_quote_usd, buy_price, filters)
-        sell_qty = _compute_quantity(cfg.per_order_quote_usd, sell_price, filters)
+        buy_qty = _compute_quantity(cfg, buy_price, filters)
+        sell_qty = _compute_quantity(cfg, sell_price, filters)
 
         _ensure_notional("buy", step, buy_price, buy_qty, filters.min_notional)
         _ensure_notional("sell", step, sell_price, sell_qty, filters.min_notional)
 
-        buy_level = GridLevel(index=len(levels), side=GridSide.BUY, price=buy_price, quantity=buy_qty)
-        levels.append(buy_level)
-        sell_level = GridLevel(index=len(levels), side=GridSide.SELL, price=sell_price, quantity=sell_qty)
-        levels.append(sell_level)
+        levels.append(GridLevel(index=len(levels), side=GridSide.BUY, price=buy_price, quantity=buy_qty))
+        levels.append(GridLevel(index=len(levels), side=GridSide.SELL, price=sell_price, quantity=sell_qty))
 
         lowest_price = min(lowest_price, buy_price)
         highest_price = max(highest_price, sell_price)
@@ -97,6 +95,32 @@ def _ensure_notional(label: str, step: int, price: float, quantity: float, min_n
         )
 
 
+def _compute_quantity(cfg: BotConfig, price: float, filters: SymbolFilters) -> float:
+    if price <= 0:
+        raise GridComputationError("Price must be positive for quantity computation")
+    step = filters.step_size
+    if step <= 0:
+        raise GridComputationError("Invalid step size")
+
+    if cfg.per_order_base_qty is not None and cfg.per_order_base_qty > 0:
+        raw_qty = cfg.per_order_base_qty
+    else:
+        raw_qty = cfg.per_order_quote_usd / price
+
+    steps = max(1, math.ceil((raw_qty - 1e-12) / step))
+    qty = steps * step
+    if qty < filters.min_qty:
+        qty = filters.min_qty
+
+    while price * qty < filters.min_notional:
+        steps += 1
+        qty = steps * step
+        if steps > 1_000_000:
+            raise GridComputationError("Unable to satisfy minNotional with given parameters")
+
+    return round(qty, _decimal_places(step))
+
+
 def _floor_to_tick(value: float, tick: float) -> float:
     if tick <= 0:
         return value
@@ -107,20 +131,6 @@ def _ceil_to_tick(value: float, tick: float) -> float:
     if tick <= 0:
         return value
     return math.ceil(value / tick) * tick
-
-
-def _compute_quantity(per_order_quote: float, price: float, filters: SymbolFilters) -> float:
-    if price <= 0:
-        raise GridComputationError("Price must be positive for quantity computation")
-    step = filters.step_size
-    if step <= 0:
-        raise GridComputationError("Invalid step size")
-    raw_qty = per_order_quote / price
-    steps = max(1, math.floor((raw_qty / step) + 1e-12))
-    qty = steps * step
-    if qty < filters.min_qty:
-        qty = filters.min_qty
-    return round(qty, _decimal_places(step))
 
 
 def _decimal_places(step: float) -> int:

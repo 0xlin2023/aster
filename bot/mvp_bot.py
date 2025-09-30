@@ -127,7 +127,11 @@ class AsterMVPGridBot:
         leverage = max(1, self.cfg.leverage)
         available = await self.client.get_available_balance()
         margin_budget = max(0.0, available * (1.0 - reserve))
-        per_order_margin = self.cfg.per_order_quote_usd / leverage
+        if self.cfg.per_order_base_qty is not None and self.cfg.per_order_base_qty > 0:
+            per_order_notional = mid_price * self.cfg.per_order_base_qty
+        else:
+            per_order_notional = self.cfg.per_order_quote_usd
+        per_order_margin = per_order_notional / leverage
         pair_margin = per_order_margin * 2.0
         if pair_margin <= 0:
             _LOGGER.warning("Pair margin computed as %.4f; using min_levels_per_side", pair_margin)
@@ -138,8 +142,9 @@ class AsterMVPGridBot:
         if levels <= 0:
             levels = max(1, self.cfg.min_levels_per_side)
             _LOGGER.warning("Available margin %.2f insufficient; forcing min_levels_per_side=%d", available, levels)
-        _LOGGER.info("Grid sizing: available=%.2f reserve=%.0f%% pairMargin=%.2f leverage=%d -> levels/side=%d", available, reserve * 100.0, pair_margin, leverage, levels)
+        _LOGGER.info("Grid sizing: available=%.2f reserve=%.0f%% perOrderNotional=%.2f pairMargin=%.2f leverage=%d -> levels/side=%d", available, reserve * 100.0, per_order_notional, pair_margin, leverage, levels)
         return levels
+
 
     async def _establish_base_position(self) -> None:
         assert self.grid_layout and self.state and self.exchange_info
