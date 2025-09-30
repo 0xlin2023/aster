@@ -1,0 +1,48 @@
+# 环境变量文件
+.env
+.env.local
+.env.production
+
+# Python缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+logs/
+
+# 临时文件
+tmp/
+temp/
+
+# API密钥和配置文件（如果包含真实密钥）
+config/secrets.yaml
+config/production.yaml
+
+# 构建输出
+build/
+dist/
+
+# 测试覆盖率
+.coverage
+htmlcov/
+
+# 依赖目录
+node_modules/

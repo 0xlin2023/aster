@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(findstr:*)",
+      "Read(//c/Users/jeremylin/**)",
+      "Bash(echo:*)",
+      "Bash(python:*)",
+      "Bash(dir:*)",
+      "Bash(cmd:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

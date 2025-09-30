@@ -1,0 +1,21 @@
+﻿symbol: BTCUSDT
+mode: ONE_WAY
+margin_type: CROSSED
+leverage: 40
+per_order_quote_usd: 240
+grid_spacing: 30
+min_levels_per_side: 1
+margin_reserve_pct: 0.10
+maker_guard_ticks: 0
+recenter_threshold: 0.25
+max_open_orders: 80
+max_resting_orders_per_side: 25
+max_concurrent_positions_per_side: 18
+kill_switch_ms: 1800000
+log_level: INFO
+rest_base: https://fapi.asterdex.com
+ws_market: wss://fstream.asterdex.com
+ws_user: wss://fstream.asterdex.com
+recv_window: 5000
+dry_run: false
+
