@@ -21,3 +21,4 @@ recv_window: 5000
 dry_run: false
 
 
+status_notify_interval: 3600

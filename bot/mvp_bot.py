@@ -8,6 +8,7 @@ import math
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+import httpx
 import websockets
 
 from .client import AsterRestClient, ExchangeInfo, RestAPIError
@@ -55,6 +56,8 @@ class AsterMVPGridBot:
                         asyncio.create_task(self._listen_key_keepalive(), name="listenKey-keepalive"),
                     ]
                 )
+            if self.cfg.status_notify_send_key:
+                self._tasks.append(asyncio.create_task(self._status_notifier_loop(), name="status-notifier"))
             await self._stop.wait()
         finally:
             await self._shutdown()
@@ -137,8 +140,7 @@ class AsterMVPGridBot:
             _LOGGER.warning("Pair margin computed as %.4f; using min_levels_per_side", pair_margin)
             return max(1, self.cfg.min_levels_per_side)
         raw_levels = int(margin_budget // pair_margin)
-        cap = min(self.cfg.max_resting_orders_per_side, max(1, self.cfg.max_open_orders // 2))
-        levels = max(self.cfg.min_levels_per_side, min(raw_levels, cap))
+        levels = max(self.cfg.min_levels_per_side, raw_levels)
         if levels <= 0:
             levels = max(1, self.cfg.min_levels_per_side)
             _LOGGER.warning("Available margin %.2f insufficient; forcing min_levels_per_side=%d", available, levels)
@@ -610,6 +612,65 @@ class AsterMVPGridBot:
                 _LOGGER.warning("Order already exists for %s at %s, skip respawn", respawn_level.side.value, self._format_price(respawn_level.price))
             await self._log_order_panel(f"{side.value} fill")
 
+    async def _status_notifier_loop(self) -> None:
+        assert self.cfg.status_notify_send_key
+        interval = max(10, int(self.cfg.status_notify_interval or 60))
+        url = f"https://sctapi.ftqq.com/{self.cfg.status_notify_send_key}.send"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            while not self._stop.is_set():
+                try:
+                    await self._send_status_notification(client, url)
+                except Exception as exc:  # pylint: disable=broad-except
+                    _LOGGER.error("Status notification failed: %s", exc)
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    continue
+            try:
+                await self._send_status_notification(client, url, final=True)
+            except Exception as exc:  # pylint: disable=broad-except
+                _LOGGER.error("Final status notification failed: %s", exc)
+
+    async def _send_status_notification(self, client: httpx.AsyncClient, url: str, *, final: bool = False) -> None:
+        status = "stopped" if self._stop.is_set() else "running"
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        open_orders = buy_count = sell_count = 0
+        last_mid = grid_center = None
+        async with self._order_lock:
+            if self.state:
+                open_orders = len(self.state.open_orders)
+                for record in self.state.open_orders.values():
+                    if record.side is GridSide.BUY:
+                        buy_count += 1
+                    else:
+                        sell_count += 1
+                last_mid = self.state.last_mid
+                grid_center = self.state.grid_center
+        def _fmt(value: Optional[float]) -> str:
+            return self._format_price(value) if value is not None else "n/a"
+        best_bid = _fmt(self.best_bid)
+        best_ask = _fmt(self.best_ask)
+        body_lines = [
+            f"status: {status}",
+            f"time: {timestamp}",
+            f"orders: total {open_orders} (buy {buy_count} / sell {sell_count})",
+            f"last_mid: {_fmt(last_mid)}",
+            f"grid_center: {_fmt(grid_center)}",
+            f"best_bid/best_ask: {best_bid} / {best_ask}",
+        ]
+        if final:
+            body_lines.append("event: shutdown")
+        title_suffix = "stopped" if status == "stopped" else "running"
+        payload = {"title": f"Aster Bot {title_suffix}", "desp": "\n".join(body_lines)}
+        response = await client.post(url, data=payload)
+        response.raise_for_status()
+        try:
+            data = response.json()
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and data.get("code") not in (0, 200):
+            _LOGGER.warning("Status notification returned error: %s", data)
+
     async def _listen_key_keepalive(self) -> None:
         assert not self.cfg.dry_run
         while not self._stop.is_set():
@@ -816,13 +877,6 @@ class AsterMVPGridBot:
                 _LOGGER.debug("Order already exists for %s at %s (double-check)", level.side.value, self._format_price(level.price))
                 return
 
-            total_orders = len(self.state.open_orders)
-            if total_orders >= self.cfg.max_open_orders:
-                _LOGGER.warning("Reached max open orders %d", self.cfg.max_open_orders)
-                return
-            side_count = self._count_orders(level.side)
-            if side_count >= self.cfg.max_resting_orders_per_side:
-                return
         await self._submit_level_order(level)
 
     def _align_price(self, value: float, side: GridSide, tick: float) -> float:

@@ -20,3 +20,4 @@ ws_user: wss://fstream.asterdex.com
 recv_window: 5000
 dry_run: true
 
+status_notify_interval: 3600

@@ -18,26 +18,6 @@ class OrderRecord:
     status: str = "NEW"
 
 
-@dataclass(slots=True)
-class ExposureCounter:
-    long_exposure: int = 0
-    short_exposure: int = 0
-
-    def record_fill(self, side: GridSide) -> int:
-        if side is GridSide.BUY:
-            if self.short_exposure > 0:
-                self.short_exposure -= 1
-                return self.short_exposure
-            self.long_exposure += 1
-            return self.long_exposure
-        if self.long_exposure > 0:
-            self.long_exposure -= 1
-            return self.long_exposure
-        self.short_exposure += 1
-        return self.short_exposure
-
-    def exposure_for_side(self, side: GridSide) -> int:
-        return self.long_exposure if side is GridSide.BUY else self.short_exposure
 
 
 @dataclass(slots=True)
@@ -46,7 +26,6 @@ class RuntimeState:
     last_mid: float
     open_orders: Dict[int, OrderRecord] = field(default_factory=dict)
     by_client_id: Dict[str, int] = field(default_factory=dict)
-    exposure: ExposureCounter = field(default_factory=ExposureCounter)
     last_market_ts: float = field(default_factory=time.monotonic)
     last_user_ts: float = field(default_factory=time.monotonic)
 

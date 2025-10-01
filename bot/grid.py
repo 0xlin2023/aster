@@ -48,10 +48,9 @@ def build_grid(mid_price: float, cfg: BotConfig, filters: SymbolFilters, levels_
         raise GridComputationError("Mid price must be positive")
     if levels_per_side <= 0:
         raise GridComputationError("Levels per side must be positive")
-    if levels_per_side > cfg.max_resting_orders_per_side:
-        raise GridComputationError("Levels per side exceed configured max_resting_orders_per_side")
-    if levels_per_side * 2 > cfg.max_open_orders:
-        raise GridComputationError("Total grid levels exceed configured max_open_orders")
+    # 移除max_resting_orders_per_side限制，允许网格自由扩展
+    # if levels_per_side > cfg.max_resting_orders_per_side:
+    #     raise GridComputationError("Levels per side exceed configured max_resting_orders_per_side")
 
     spacing_units = max(1, math.ceil(cfg.grid_spacing / filters.tick_size))
     spacing = spacing_units * filters.tick_size

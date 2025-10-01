@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import os
 import yaml
+
+
+DEFAULT_STATUS_NOTIFY_SEND_KEY = "SCT235610Tgqg49xZHBAQz0rrTVWUJ1IjI"
 
 
 @dataclass(slots=True)
@@ -29,6 +33,8 @@ class BotConfig:
     min_levels_per_side: int = 1
     margin_reserve_pct: float = 0.1
     dry_run_virtual_balance: float = 10_000.0
+    status_notify_send_key: Optional[str] = None
+    status_notify_interval: int = 3600
     recv_window: int = 5000
     dry_run: bool = True
 
@@ -70,6 +76,17 @@ def load_config(path: str | Path) -> BotConfig:
     base_qty_raw = raw.get("per_order_base_qty")
     base_qty = float(base_qty_raw) if base_qty_raw is not None else None
 
+    env_send_key = os.getenv("ASTER_STATUS_NOTIFY_SEND_KEY", "").strip()
+    config_send_key = str(raw.get("status_notify_send_key") or "").strip()
+    send_key = env_send_key or (config_send_key or DEFAULT_STATUS_NOTIFY_SEND_KEY)
+    interval_value = raw.get("status_notify_interval", raw.get("status_notify_interval_sec", 3600))
+    try:
+        interval = int(interval_value)
+    except (TypeError, ValueError):
+        interval = 3600
+    if interval <= 0:
+        interval = 3600
+
     return BotConfig(
         symbol=str(raw["symbol"]).upper(),
         mode=str(raw["mode"]).upper(),
@@ -91,6 +108,8 @@ def load_config(path: str | Path) -> BotConfig:
         min_levels_per_side=int(raw.get("min_levels_per_side", 1)),
         margin_reserve_pct=float(raw.get("margin_reserve_pct", 0.1)),
         dry_run_virtual_balance=float(raw.get("dry_run_virtual_balance", 10_000.0)),
+        status_notify_send_key=send_key,
+        status_notify_interval=interval,
         recv_window=int(raw.get("recv_window", 5000)),
         dry_run=bool(raw.get("dry_run", raw.get("dry-run", True))),
     )
