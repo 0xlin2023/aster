@@ -8,7 +8,7 @@ grid_spacing: 30
 min_levels_per_side: 1
 margin_reserve_pct: 0.10
 maker_guard_ticks: 0
-recenter_threshold: 0.25
+recenter_threshold: 1
 max_open_orders: 80
 max_resting_orders_per_side: 25
 max_concurrent_positions_per_side: 18
