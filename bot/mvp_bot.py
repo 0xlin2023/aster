@@ -165,8 +165,6 @@ class AsterMVPGridBot:
 
         if self.cfg.dry_run:
             _LOGGER.info("[DRY] establish base position qty=%s (~%.2f USDT)", self._format_quantity(base_quantity), notional_est)
-            self.state.exposure.long_exposure = len(sell_levels)
-            self.state.exposure.short_exposure = 0
             return
 
         payload = {
@@ -179,8 +177,6 @@ class AsterMVPGridBot:
         try:
             await self._with_retry("base position", lambda: self.client.new_order(payload))
             _LOGGER.info("Base position acquired successfully")
-            self.state.exposure.long_exposure = len(sell_levels)
-            self.state.exposure.short_exposure = 0
         except Exception as exc:
             _LOGGER.error("Failed to acquire base position: %s", exc)
             # 濡傛灉鍩虹浠撲綅寤虹珛澶辫触锛岃褰曞綋鍓嶇殑浠撲綅鐘舵€?
@@ -220,9 +216,6 @@ class AsterMVPGridBot:
 
             # 绛夊緟浠撲綅瀹屽叏骞虫帀
             await self._wait_for_position_flattened(step)
-
-        self.state.exposure.long_exposure = 0
-        self.state.exposure.short_exposure = 0
 
     async def _wait_for_position_flattened(self, step: float, max_attempts: int = 10) -> None:
         """等待仓位完全平掉，带有重试机制。如果失败则抛出异常阻止继续 recenter。"""
@@ -339,9 +332,6 @@ class AsterMVPGridBot:
             "quantity": self._format_quantity(quantity),
             "newClientOrderId": client_id,
         }
-        if level.side is GridSide.SELL:
-            payload["reduceOnly"] = "true"
-        retry_reduce = level.side is GridSide.SELL
         while True:
             try:
                 response = await self._with_retry(
@@ -355,11 +345,6 @@ class AsterMVPGridBot:
                 if code == -2011:
                     _LOGGER.warning("Duplicate order detected for %s at %s", level.side.value, self._format_price(price))
                     return
-                if retry_reduce and code == -2022 and level.side is GridSide.SELL:
-                    retry_reduce = False
-                    _LOGGER.warning("ReduceOnly rejected at %s (code=%s); refreshing base position", self._format_price(price), code)
-                    await self._establish_base_position()
-                    continue
                 raise
         order_id = int(response.get("orderId", _fake_order_id()))
         record = OrderRecord(
@@ -486,8 +471,14 @@ class AsterMVPGridBot:
         span = self.grid_layout.spacing * max(1, self.grid_layout.levels_per_side)
         threshold = self.cfg.recenter_threshold * span
         if threshold <= 0:
-            threshold = self.grid_layout.spacing
+            threshold = self.grid_layout.spacing * 2  # 最小2个网格间距才触发recenter
         if abs(mid - self.state.grid_center) < threshold:
+            return
+
+        # 添加防抖：避免频繁recenter
+        current_time = time.time()
+        if hasattr(self, '_last_recenter_time') and current_time - self._last_recenter_time < 300:  # 5分钟内只允许一次recenter
+            _LOGGER.debug("Recenter skipped due to rate limit (5min)")
             return
         _LOGGER.warning(
             "Mid %.2f deviated from center %.2f by >= %.2f, recentering",
@@ -527,9 +518,11 @@ class AsterMVPGridBot:
             _LOGGER.info("Connecting user stream %s", url)
             try:
                 async with websockets.connect(url, ping_interval=20, ping_timeout=20, close_timeout=10) as ws:
+                    _LOGGER.info("WebSocket connected, listening for user events")
                     async for message in ws:
                         if self._stop.is_set():
                             break
+                        _LOGGER.debug("Raw WebSocket message: %s", message)
                         payload = json.loads(message)
                         await self._handle_user_event(payload)
             except (asyncio.CancelledError, KeyboardInterrupt):
@@ -541,28 +534,33 @@ class AsterMVPGridBot:
     async def _handle_user_event(self, payload: Dict[str, Any]) -> None:
         assert self.state
         event_type = payload.get("e") or payload.get("eventType")
+        _LOGGER.info("Received user event: %s (type: %s)", event_type, payload)
         self.state.update_user_timestamp()
         if event_type == "listenKeyExpired":
             _LOGGER.error("Listen key expired, requesting a new one")
             self._listen_key = await self._with_retry("listen key", self.client.new_listen_key)
             return
         if event_type == "ORDER_TRADE_UPDATE":
+            _LOGGER.info("Processing ORDER_TRADE_UPDATE")
             await self._handle_order_trade(payload.get("o", {}))
+        else:
+            _LOGGER.warning("Unhandled event type: %s", event_type)
 
     async def _handle_order_trade(self, data: Dict[str, Any]) -> None:
         assert self.state and self.grid_layout
+        _LOGGER.info("Received order trade update: %s", data)
         client_id = data.get("c")
         order_id = int(data.get("i")) if data.get("i") is not None else None
         status = data.get("X")
         side_raw = data.get("S")
         if not client_id or not status or not side_raw:
+            _LOGGER.warning("Invalid order trade data: missing client_id/status/side")
             return
         try:
             side = GridSide(side_raw)
         except ValueError:
             return
         respawn_level: Optional[GridLevel] = None
-        exposure_after_fill: Optional[int] = None
         async with self._order_lock:
             record = self.state.get_by_client_id(client_id)
             if not record and order_id and order_id in self.state.open_orders:
@@ -586,27 +584,30 @@ class AsterMVPGridBot:
                 )
                 if status == "FILLED":
                     self.state.drop_order(record.order_id or order_id or 0)
-                    exposure_after_fill = self.state.exposure.record_fill(side)
                     opposite_side = GridSide.SELL if side is GridSide.BUY else GridSide.BUY
                     target_price = self._compute_relaunch_price(opposite_side, record.price)
+                    _LOGGER.info("Computing refill price for %s after %s fill at %s: target=%s",
+                               opposite_side.value, side.value, self._format_price(record.price),
+                               self._format_price(target_price) if target_price else "None")
                     if target_price is not None:
+                        # 为补单生成新的唯一index
+                        new_index = max((lvl.index for lvl in self.grid_layout.levels), default=-1) + 1
                         respawn_level = GridLevel(
-                            index=record.level_index,
+                            index=new_index,
                             side=opposite_side,
                             price=target_price,
                             quantity=record.quantity,
                         )
+                    else:
+                        _LOGGER.warning("Failed to compute refill price for %s after %s fill at %s",
+                                      opposite_side.value, side.value, self._format_price(record.price))
         if respawn_level is not None:
-            if exposure_after_fill is not None and exposure_after_fill >= self.cfg.max_concurrent_positions_per_side:
-                _LOGGER.warning(
-                    "Exposure %s reached %d, continuing refill",
-                    side.value,
-                    exposure_after_fill,
-                )
+            _LOGGER.info("Refilling %s order at %s after %s fill", respawn_level.side.value, self._format_price(respawn_level.price), side.value)
             if not self._order_exists(respawn_level.side, respawn_level.price):
                 await self._ensure_level_has_order(respawn_level)
+                _LOGGER.info("Successfully placed refill %s order at %s", respawn_level.side.value, self._format_price(respawn_level.price))
             else:
-                _LOGGER.debug("Order already exists for %s at %s, skip respawn", respawn_level.side.value, self._format_price(respawn_level.price))
+                _LOGGER.warning("Order already exists for %s at %s, skip respawn", respawn_level.side.value, self._format_price(respawn_level.price))
             await self._log_order_panel(f"{side.value} fill")
 
     async def _listen_key_keepalive(self) -> None:
@@ -674,21 +675,39 @@ class AsterMVPGridBot:
 
     async def _maintenance_loop(self) -> None:
         """Periodic health checks to keep orders active."""
-        interval = max(30.0, self.cfg.kill_switch_ms / 1000.0)
+        # 10秒定期检查输出
+        health_interval = 10.0
+        maintenance_interval = max(60.0, self.cfg.kill_switch_ms / 1000.0)
+        last_health_time = 0
+
         while not self._stop.is_set():
-            await asyncio.sleep(interval)
-            if not self.state or not self.grid_layout:
-                continue
-            async with self._order_lock:
-                snapshot = list(self.state.open_orders.values())
-            if not snapshot:
-                _LOGGER.warning("Maintenance: no resting orders; restarting grid")
-                await self._restart_grid("maintenance-empty")
-                continue
-            has_sell = any(rec.side is GridSide.SELL for rec in snapshot)
-            if not has_sell:
-                _LOGGER.warning("Maintenance: sell side empty; restarting grid")
-                await self._restart_grid("maintenance-missing-sells")
+            current_time = time.time()
+
+            # 每10秒输出订单状态
+            if current_time - last_health_time >= health_interval:
+                await self._log_order_panel("10s-update")
+                last_health_time = current_time
+
+            await asyncio.sleep(1.0)  # 每1秒检查一次
+
+            # 原来的maintenance检查（降低频率）
+            if current_time - last_health_time >= maintenance_interval:
+                if not self.state or not self.grid_layout:
+                    continue
+                async with self._order_lock:
+                    snapshot = list(self.state.open_orders.values())
+                if not snapshot:
+                    _LOGGER.warning("Maintenance: no resting orders; restarting grid")
+                    await self._restart_grid("maintenance-empty")
+                    continue
+                has_sell = any(rec.side is GridSide.SELL for rec in snapshot)
+                has_buy = any(rec.side is GridSide.BUY for rec in snapshot)
+                if not has_sell:
+                    _LOGGER.warning("Maintenance: sell side empty; restarting grid")
+                    await self._restart_grid("maintenance-missing-sells")
+                elif not has_buy:
+                    _LOGGER.warning("Maintenance: buy side empty; restarting grid")
+                    await self._restart_grid("maintenance-missing-buys")
 
     async def _cancel_all_orders(self, ignore_errors: bool = False) -> None:
         if not self.state:
@@ -770,7 +789,8 @@ class AsterMVPGridBot:
             return self._align_price(capped, side, tick)
         raw = min(reference_price - spacing, reference_price - tick)
         capped = max(raw, self.grid_layout.lower_price)
-        if capped >= reference_price:
+        # 修复：允许补单价格略高于参考价格（网格边界可能不合理）
+        if abs(capped - reference_price) < tick:
             return None
         return self._align_price(capped, side, tick)
 
