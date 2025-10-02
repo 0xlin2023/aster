@@ -6,7 +6,7 @@ import hmac
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+from ._compat import slotted_dataclass
 from collections.abc import Iterable as IterableABC
 from typing import Any, Dict, Iterable, Mapping, MutableMapping, Optional
 
@@ -26,14 +26,14 @@ class RestAPIError(Exception):
         self.payload = payload
 
 
-@dataclass(slots=True)
+@slotted_dataclass
 class RateLimit:
     interval: str
     interval_num: int
     limit: int
 
 
-@dataclass(slots=True)
+@slotted_dataclass
 class ExchangeInfo:
     symbol: str
     filters: SymbolFilters

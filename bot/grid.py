@@ -1,11 +1,14 @@
 ﻿from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable, List
 
+from ._compat import slotted_dataclass
 from .config import BotConfig, SymbolFilters
+
+
+PREFERRED_BASE_QTY = 0.002
 
 
 class GridSide(str, Enum):
@@ -13,7 +16,7 @@ class GridSide(str, Enum):
     SELL = "SELL"
 
 
-@dataclass(slots=True)
+@slotted_dataclass
 class GridLevel:
     index: int
     side: GridSide
@@ -21,7 +24,7 @@ class GridLevel:
     quantity: float
 
 
-@dataclass(slots=True)
+@slotted_dataclass
 class GridLayout:
     center_price: float
     lower_price: float
@@ -101,8 +104,10 @@ def _compute_quantity(cfg: BotConfig, price: float, filters: SymbolFilters) -> f
     if step <= 0:
         raise GridComputationError("Invalid step size")
 
-    if cfg.per_order_base_qty is not None and cfg.per_order_base_qty > 0:
-        raw_qty = cfg.per_order_base_qty
+    preferred_base = max(PREFERRED_BASE_QTY, float(cfg.per_order_base_qty or 0))
+
+    if preferred_base > 0:
+        raw_qty = preferred_base
     else:
         raw_qty = cfg.per_order_quote_usd / price
 

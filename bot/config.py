@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from dataclasses import dataclass
+from ._compat import slotted_dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -11,7 +11,7 @@ import yaml
 DEFAULT_STATUS_NOTIFY_SEND_KEY = "SCT235610Tgqg49xZHBAQz0rrTVWUJ1IjI"
 
 
-@dataclass(slots=True)
+@slotted_dataclass
 class BotConfig:
     symbol: str
     mode: str
@@ -39,7 +39,7 @@ class BotConfig:
     dry_run: bool = True
 
 
-@dataclass(slots=True)
+@slotted_dataclass
 class SymbolFilters:
     tick_size: float
     step_size: float

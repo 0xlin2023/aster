@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import field
+from ._compat import slotted_dataclass
 from typing import Dict, Optional
 
 from .grid import GridLevel, GridSide
 
 
-@dataclass(slots=True)
+@slotted_dataclass
 class OrderRecord:
     level_index: int
     side: GridSide
@@ -20,7 +21,7 @@ class OrderRecord:
 
 
 
-@dataclass(slots=True)
+@slotted_dataclass
 class RuntimeState:
     grid_center: float
     last_mid: float

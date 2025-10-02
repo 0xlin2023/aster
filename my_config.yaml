@@ -2,7 +2,7 @@
 mode: ONE_WAY
 margin_type: CROSSED
 leverage: 40
-per_order_quote_usd: 240
+per_order_quote_usd: 270
 per_order_base_qty: 0.001
 grid_spacing: 30
 min_levels_per_side: 1
