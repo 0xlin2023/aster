@@ -11,6 +11,11 @@ from .config import BotConfig, SymbolFilters
 PREFERRED_BASE_QTY = 0.002
 
 
+def preferred_base_quantity(cfg: BotConfig) -> float:
+    value = float(cfg.per_order_base_qty or 0)
+    return max(PREFERRED_BASE_QTY, value)
+
+
 class GridSide(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
@@ -104,7 +109,7 @@ def _compute_quantity(cfg: BotConfig, price: float, filters: SymbolFilters) -> f
     if step <= 0:
         raise GridComputationError("Invalid step size")
 
-    preferred_base = max(PREFERRED_BASE_QTY, float(cfg.per_order_base_qty or 0))
+    preferred_base = preferred_base_quantity(cfg)
 
     if preferred_base > 0:
         raw_qty = preferred_base

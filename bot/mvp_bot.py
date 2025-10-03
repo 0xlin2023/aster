@@ -13,7 +13,7 @@ import websockets
 
 from .client import AsterRestClient, ExchangeInfo, RestAPIError
 from .config import BotConfig
-from .grid import GridLayout, GridLevel, GridSide, build_grid
+from .grid import GridLayout, GridLevel, GridSide, build_grid, preferred_base_quantity
 from .state import OrderRecord, RuntimeState, build_initial_state
 
 _LOGGER = logging.getLogger(__name__)
@@ -132,8 +132,9 @@ class AsterMVPGridBot:
         leverage = max(1, self.cfg.leverage)
         available = await self.client.get_available_balance()
         margin_budget = max(0.0, available * (1.0 - reserve))
-        if self.cfg.per_order_base_qty is not None and self.cfg.per_order_base_qty > 0:
-            per_order_notional = mid_price * self.cfg.per_order_base_qty
+        base_qty = preferred_base_quantity(self.cfg)
+        if base_qty > 0:
+            per_order_notional = mid_price * base_qty
         else:
             per_order_notional = self.cfg.per_order_quote_usd
         per_order_margin = per_order_notional / leverage
@@ -337,6 +338,8 @@ class AsterMVPGridBot:
             "quantity": self._format_quantity(quantity),
             "newClientOrderId": client_id,
         }
+        if level.side is GridSide.SELL:
+            payload["reduceOnly"] = "true"
         while True:
             try:
                 response = await self._with_retry(
@@ -648,12 +651,14 @@ class AsterMVPGridBot:
             "grid_center": None,
             "best_bid": self.best_bid,
             "best_ask": self.best_ask,
+            "available_balance": None,
             "market_age": None,
             "user_age": None,
             "last_recenter_age": None,
             "trades_last_hour": None,
             "last_trade_age": None,
             "trade_error": None,
+            "balance_error": None,
         }
 
         kill_switch_timeout = max(30.0, self.cfg.kill_switch_ms / 1000.0)
@@ -692,6 +697,13 @@ class AsterMVPGridBot:
 
         if snapshot["open_orders"] == 0:
             snapshot["issues"].append("no resting orders")
+
+        try:
+            balance = await self.client.get_available_balance()
+            snapshot["available_balance"] = balance
+        except Exception as exc:  # pylint: disable=broad-except
+            snapshot["issues"].append("balance unavailable")
+            snapshot["balance_error"] = str(exc)
 
         if not self.cfg.dry_run:
             start_ms = int(max(0, (wall_now - 3600.0) * 1000))
@@ -736,6 +748,12 @@ class AsterMVPGridBot:
             f"market_age: {_fmt_seconds(snapshot.get('market_age'))}",
         ]
 
+        balance = snapshot.get("available_balance")
+        if balance is not None:
+            body_lines.append(f"available_balance: {balance:.2f} USDT")
+        else:
+            body_lines.append("available_balance: n/a")
+
         if not self.cfg.dry_run:
             body_lines.append(f"user_age: {_fmt_seconds(snapshot.get('user_age'))}")
             body_lines.append(f"trades_last_hour: {snapshot.get('trades_last_hour', 'n/a')}")
@@ -751,6 +769,10 @@ class AsterMVPGridBot:
         trade_error = snapshot.get("trade_error")
         if trade_error:
             body_lines.append(f"trade_error: {trade_error}")
+
+        balance_error = snapshot.get("balance_error")
+        if balance_error:
+            body_lines.append(f"balance_error: {balance_error}")
 
         if final:
             body_lines.append("event: shutdown")
