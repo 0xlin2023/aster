@@ -146,26 +146,14 @@ class AsterRestClient:
         if self._cfg.dry_run:
             return self._cfg.dry_run_virtual_balance
         payload = await self._signed_request("GET", "/fapi/v2/balance", {})
-        records: Iterable[Any]
-        if isinstance(payload, Mapping):
-            data_field = payload.get("data")
-            if isinstance(data_field, IterableABC) and not isinstance(data_field, (str, bytes, bytearray)):
-                records = data_field
-            else:
-                records = payload.values()
-        elif isinstance(payload, IterableABC) and not isinstance(payload, (str, bytes, bytearray)):
-            records = payload
-        else:
-            records = []
-        for entry in records:
-            if not isinstance(entry, Mapping):
-                continue
-            if entry.get("asset") == asset:
-                try:
-                    return float(entry.get("availableBalance") or 0.0)
-                except (TypeError, ValueError):
-                    return 0.0
-        return 0.0
+        return _parse_balance(payload, asset, field="availableBalance")
+
+    async def get_account_equity(self, asset: str = "USDT") -> float:
+        asset = asset.upper()
+        if self._cfg.dry_run:
+            return self._cfg.dry_run_virtual_balance
+        payload = await self._signed_request("GET", "/fapi/v2/balance", {})
+        return _parse_balance(payload, asset, field="balance")
 
     async def get_position_amount(self, symbol: str) -> float:
         symbol = symbol.upper()
@@ -266,6 +254,30 @@ def _env(key: str) -> Optional[str]:
     import os
 
     return os.environ.get(key)
+
+
+def _parse_balance(payload: Any, asset: str, *, field: str) -> float:
+    records: Iterable[Any]
+    if isinstance(payload, Mapping):
+        data_field = payload.get("data")
+        if isinstance(data_field, IterableABC) and not isinstance(data_field, (str, bytes, bytearray)):
+            records = data_field
+        else:
+            records = payload.values()
+    elif isinstance(payload, IterableABC) and not isinstance(payload, (str, bytes, bytearray)):
+        records = payload
+    else:
+        records = []
+    for entry in records:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("asset") or "").upper() != asset:
+            continue
+        try:
+            return float(entry.get(field) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
 
 
 async def _handle_response(response: httpx.Response) -> Mapping[str, Any]:

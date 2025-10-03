@@ -652,6 +652,7 @@ class AsterMVPGridBot:
             "best_bid": self.best_bid,
             "best_ask": self.best_ask,
             "available_balance": None,
+            "account_equity": None,
             "market_age": None,
             "user_age": None,
             "last_recenter_age": None,
@@ -705,6 +706,13 @@ class AsterMVPGridBot:
             snapshot["issues"].append("balance unavailable")
             snapshot["balance_error"] = str(exc)
 
+        try:
+            equity = await self.client.get_account_equity()
+            snapshot["account_equity"] = equity
+        except Exception as exc:  # pylint: disable=broad-except
+            snapshot["issues"].append("equity unavailable")
+            snapshot["equity_error"] = str(exc)
+
         if not self.cfg.dry_run:
             start_ms = int(max(0, (wall_now - 3600.0) * 1000))
             try:
@@ -754,6 +762,12 @@ class AsterMVPGridBot:
         else:
             body_lines.append("available_balance: n/a")
 
+        equity = snapshot.get("account_equity")
+        if equity is not None:
+            body_lines.append(f"account_equity: {equity:.2f} USDT")
+        else:
+            body_lines.append("account_equity: n/a")
+
         if not self.cfg.dry_run:
             body_lines.append(f"user_age: {_fmt_seconds(snapshot.get('user_age'))}")
             body_lines.append(f"trades_last_hour: {snapshot.get('trades_last_hour', 'n/a')}")
@@ -773,6 +787,10 @@ class AsterMVPGridBot:
         balance_error = snapshot.get("balance_error")
         if balance_error:
             body_lines.append(f"balance_error: {balance_error}")
+
+        equity_error = snapshot.get("equity_error")
+        if equity_error:
+            body_lines.append(f"equity_error: {equity_error}")
 
         if final:
             body_lines.append("event: shutdown")
