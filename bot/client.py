@@ -131,6 +131,16 @@ class AsterRestClient:
         data = await self._signed_request("GET", "/fapi/v1/openOrders", {"symbol": symbol.upper()})
         return data
 
+    async def get_user_trades(self, symbol: str, *, start_time: Optional[int] = None, end_time: Optional[int] = None, limit: int = 500) -> Iterable[Mapping[str, Any]]:
+        if self._cfg.dry_run:
+            return []
+        params: Dict[str, Any] = {"symbol": symbol.upper(), "limit": max(1, min(limit, 1000))}
+        if start_time is not None:
+            params["startTime"] = int(start_time)
+        if end_time is not None:
+            params["endTime"] = int(end_time)
+        return await self._signed_request("GET", "/fapi/v1/userTrades", params)
+
     async def get_available_balance(self, asset: str = "USDT") -> float:
         asset = asset.upper()
         if self._cfg.dry_run:

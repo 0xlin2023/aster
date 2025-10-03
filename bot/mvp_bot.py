@@ -6,7 +6,7 @@ import json
 import logging
 import math
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Mapping, Optional
 
 import httpx
 import websockets
@@ -39,6 +39,7 @@ class AsterMVPGridBot:
         self._restart_lock = asyncio.Lock()
         self._price_decimals = 2
         self._quantity_decimals = 3
+        self._last_recenter_time: Optional[float] = None
 
     async def run(self) -> None:
         _LOGGER.info("Starting Aster MVP v2.1 bot (dry_run=%s)", self.cfg.dry_run)
@@ -103,6 +104,7 @@ class AsterMVPGridBot:
 
         await self._establish_base_position()
         await self._deploy_initial_orders()
+        self._last_recenter_time = time.time()
         if not self.cfg.dry_run:
             self._listen_key = await self._with_retry("listen key", self.client.new_listen_key)
             _LOGGER.info("Obtained listenKey %s", self._listen_key)
@@ -276,6 +278,7 @@ class AsterMVPGridBot:
             self._current_levels_per_side = levels_per_side
             await self._establish_base_position()
             await self._deploy_initial_orders()
+            self._last_recenter_time = time.time()
             await self._log_order_panel(f"restart:{reason}")
 
     async def _log_order_panel(self, context: str) -> None:
@@ -509,6 +512,7 @@ class AsterMVPGridBot:
         )
         await self._establish_base_position()
         await self._deploy_initial_orders()
+        self._last_recenter_time = time.time()
 
     async def _user_stream_loop(self) -> None:
         assert not self.cfg.dry_run
@@ -619,7 +623,8 @@ class AsterMVPGridBot:
         async with httpx.AsyncClient(timeout=10.0) as client:
             while not self._stop.is_set():
                 try:
-                    await self._send_status_notification(client, url)
+                    snapshot = await self._gather_health_snapshot()
+                    await self._send_status_notification(client, url, snapshot)
                 except Exception as exc:  # pylint: disable=broad-except
                     _LOGGER.error("Status notification failed: %s", exc)
                 try:
@@ -627,41 +632,130 @@ class AsterMVPGridBot:
                 except asyncio.TimeoutError:
                     continue
             try:
-                await self._send_status_notification(client, url, final=True)
+                snapshot = await self._gather_health_snapshot()
+                await self._send_status_notification(client, url, snapshot, final=True)
             except Exception as exc:  # pylint: disable=broad-except
                 _LOGGER.error("Final status notification failed: %s", exc)
 
-    async def _send_status_notification(self, client: httpx.AsyncClient, url: str, *, final: bool = False) -> None:
-        status = "stopped" if self._stop.is_set() else "running"
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        open_orders = buy_count = sell_count = 0
-        last_mid = grid_center = None
+    async def _gather_health_snapshot(self) -> Dict[str, Any]:
+        snapshot: Dict[str, Any] = {
+            "status": "running" if not self._stop.is_set() else "stopped",
+            "issues": [],
+            "open_orders": 0,
+            "buy_orders": 0,
+            "sell_orders": 0,
+            "last_mid": None,
+            "grid_center": None,
+            "best_bid": self.best_bid,
+            "best_ask": self.best_ask,
+            "market_age": None,
+            "user_age": None,
+            "last_recenter_age": None,
+            "trades_last_hour": None,
+            "last_trade_age": None,
+            "trade_error": None,
+        }
+
+        kill_switch_timeout = max(30.0, self.cfg.kill_switch_ms / 1000.0)
+        monotonic_now = time.monotonic()
+        wall_now = time.time()
+
+        if self._last_recenter_time is not None:
+            snapshot["last_recenter_age"] = max(0.0, wall_now - self._last_recenter_time)
+
+        if not self.state:
+            snapshot["status"] = "stalled"
+            snapshot["issues"].append("runtime state not initialized")
+            return snapshot
+
         async with self._order_lock:
-            if self.state:
-                open_orders = len(self.state.open_orders)
-                for record in self.state.open_orders.values():
-                    if record.side is GridSide.BUY:
-                        buy_count += 1
-                    else:
-                        sell_count += 1
-                last_mid = self.state.last_mid
-                grid_center = self.state.grid_center
-        def _fmt(value: Optional[float]) -> str:
+            snapshot["open_orders"] = len(self.state.open_orders)
+            for record in self.state.open_orders.values():
+                if record.side is GridSide.BUY:
+                    snapshot["buy_orders"] += 1
+                else:
+                    snapshot["sell_orders"] += 1
+
+        snapshot["last_mid"] = self.state.last_mid
+        snapshot["grid_center"] = self.state.grid_center
+
+        market_age = monotonic_now - self.state.last_market_ts
+        snapshot["market_age"] = market_age
+        if market_age > kill_switch_timeout:
+            snapshot["issues"].append(f"market data stale {int(market_age)}s")
+
+        if not self.cfg.dry_run:
+            user_age = monotonic_now - self.state.last_user_ts
+            snapshot["user_age"] = user_age
+            if user_age > kill_switch_timeout:
+                snapshot["issues"].append(f"user stream stale {int(user_age)}s")
+
+        if snapshot["open_orders"] == 0:
+            snapshot["issues"].append("no resting orders")
+
+        if not self.cfg.dry_run:
+            start_ms = int(max(0, (wall_now - 3600.0) * 1000))
+            try:
+                trades = await self.client.get_user_trades(self.cfg.symbol, start_time=start_ms)
+                trade_list = list(trades)
+                snapshot["trades_last_hour"] = len(trade_list)
+                if trade_list:
+                    last_trade_ms = max(int(entry.get("time", 0) or 0) for entry in trade_list)
+                    if last_trade_ms:
+                        snapshot["last_trade_age"] = max(0.0, wall_now - last_trade_ms / 1000.0)
+                if not trade_list:
+                    snapshot["issues"].append("no trades in last hour")
+            except Exception as exc:  # pylint: disable=broad-except
+                snapshot["trade_error"] = str(exc)
+                snapshot["issues"].append("trade history unavailable")
+
+        if snapshot["status"] != "stopped" and snapshot["issues"]:
+            snapshot["status"] = "stalled"
+
+        return snapshot
+
+    async def _send_status_notification(self, client: httpx.AsyncClient, url: str, snapshot: Mapping[str, Any], *, final: bool = False) -> None:
+        status_text = "stopped" if final or self._stop.is_set() else str(snapshot.get("status", "unknown"))
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+
+        def _fmt_price(value: Optional[float]) -> str:
             return self._format_price(value) if value is not None else "n/a"
-        best_bid = _fmt(self.best_bid)
-        best_ask = _fmt(self.best_ask)
+
+        def _fmt_seconds(value: Optional[float]) -> str:
+            if value is None:
+                return "n/a"
+            return f"{int(value)}s"
+
         body_lines = [
-            f"status: {status}",
+            f"status: {status_text}",
             f"time: {timestamp}",
-            f"orders: total {open_orders} (buy {buy_count} / sell {sell_count})",
-            f"last_mid: {_fmt(last_mid)}",
-            f"grid_center: {_fmt(grid_center)}",
-            f"best_bid/best_ask: {best_bid} / {best_ask}",
+            f"orders: total {snapshot.get('open_orders', 0)} (buy {snapshot.get('buy_orders', 0)} / sell {snapshot.get('sell_orders', 0)})",
+            f"last_mid: {_fmt_price(snapshot.get('last_mid'))}",
+            f"grid_center: {_fmt_price(snapshot.get('grid_center'))}",
+            f"best_bid/best_ask: {_fmt_price(snapshot.get('best_bid'))} / {_fmt_price(snapshot.get('best_ask'))}",
+            f"market_age: {_fmt_seconds(snapshot.get('market_age'))}",
         ]
+
+        if not self.cfg.dry_run:
+            body_lines.append(f"user_age: {_fmt_seconds(snapshot.get('user_age'))}")
+            body_lines.append(f"trades_last_hour: {snapshot.get('trades_last_hour', 'n/a')}")
+            body_lines.append(f"last_trade_age: {_fmt_seconds(snapshot.get('last_trade_age'))}")
+
+        body_lines.append(f"last_recenter_age: {_fmt_seconds(snapshot.get('last_recenter_age'))}")
+
+        issues = snapshot.get("issues") or []
+        if issues:
+            body_lines.append("issues:")
+            body_lines.extend(f"- {issue}" for issue in issues)
+
+        trade_error = snapshot.get("trade_error")
+        if trade_error:
+            body_lines.append(f"trade_error: {trade_error}")
+
         if final:
             body_lines.append("event: shutdown")
-        title_suffix = "stopped" if status == "stopped" else "running"
-        payload = {"title": f"Aster Bot {title_suffix}", "desp": "\n".join(body_lines)}
+
+        payload = {"title": f"Aster Bot {status_text}", "desp": "\n".join(body_lines)}
         response = await client.post(url, data=payload)
         response.raise_for_status()
         try:
@@ -911,8 +1005,3 @@ def _ceil_to_tick(value: float, tick: float) -> float:
     if tick <= 0:
         return value
     return math.ceil(value / tick) * tick
-
-
-
-
-
