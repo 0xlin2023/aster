@@ -8,12 +8,11 @@ from ._compat import slotted_dataclass
 from .config import BotConfig, SymbolFilters
 
 
-PREFERRED_BASE_QTY = 0.002
+PREFERRED_BASE_QTY = 0.001
 
 
 def preferred_base_quantity(cfg: BotConfig) -> float:
-    value = float(cfg.per_order_base_qty or 0)
-    return max(PREFERRED_BASE_QTY, value)
+    return PREFERRED_BASE_QTY
 
 
 class GridSide(str, Enum):
