@@ -480,6 +480,18 @@ class AsterMVPGridBot:
         threshold = self.cfg.recenter_threshold * span
         if threshold <= 0:
             threshold = self.grid_layout.spacing * 2  # 最小2个网格间距才触发recenter
+
+        # 若价格已经跑出当前网格上下边界，立即recenter
+        if mid > self.grid_layout.upper_price or mid < self.grid_layout.lower_price:
+            _LOGGER.warning(
+                "Mid %.2f outside grid bounds [%.2f, %.2f], recentering",
+                mid,
+                self.grid_layout.lower_price,
+                self.grid_layout.upper_price,
+            )
+            await self._recenter(mid)
+            return
+
         if abs(mid - self.state.grid_center) < threshold:
             return
 
