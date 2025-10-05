@@ -37,6 +37,7 @@ class BotConfig:
     status_notify_interval: int = 3600
     recv_window: int = 5000
     dry_run: bool = True
+    log_file: Optional[str] = None
 
 
 @slotted_dataclass
@@ -112,6 +113,7 @@ def load_config(path: str | Path) -> BotConfig:
         status_notify_interval=interval,
         recv_window=int(raw.get("recv_window", 5000)),
         dry_run=bool(raw.get("dry_run", raw.get("dry-run", True))),
+        log_file=str(raw.get("log_file") or "") or None,
     )
 
 

@@ -592,24 +592,48 @@ class AsterMVPGridBot:
                     filled_qty,
                 )
                 if status == "FILLED":
+                    stored_index = record.level_index
                     self.state.drop_order(record.order_id or order_id or 0)
                     opposite_side = GridSide.SELL if side is GridSide.BUY else GridSide.BUY
                     target_price = self._compute_relaunch_price(opposite_side, record.price)
-                    _LOGGER.info("Computing refill price for %s after %s fill at %s: target=%s",
-                               opposite_side.value, side.value, self._format_price(record.price),
-                               self._format_price(target_price) if target_price else "None")
+                    _LOGGER.info(
+                        "Computing refill price for %s after %s fill at %s: target=%s",
+                        opposite_side.value,
+                        side.value,
+                        self._format_price(record.price),
+                        self._format_price(target_price) if target_price else "None",
+                    )
                     if target_price is not None:
-                        # 为补单生成新的唯一index
-                        new_index = max((lvl.index for lvl in self.grid_layout.levels), default=-1) + 1
-                        respawn_level = GridLevel(
-                            index=new_index,
-                            side=opposite_side,
-                            price=target_price,
-                            quantity=record.quantity,
-                        )
+                        if self.grid_layout:
+                            if 0 <= stored_index < len(self.grid_layout.levels):
+                                target_index = stored_index
+                            else:
+                                target_index = len(self.grid_layout.levels)
+                            new_level = GridLevel(
+                                index=target_index,
+                                side=opposite_side,
+                                price=target_price,
+                                quantity=record.quantity,
+                            )
+                            if target_index < len(self.grid_layout.levels):
+                                self.grid_layout.levels[target_index] = new_level
+                            else:
+                                self.grid_layout.levels.append(new_level)
+                            respawn_level = new_level
+                        else:
+                            respawn_level = GridLevel(
+                                index=stored_index,
+                                side=opposite_side,
+                                price=target_price,
+                                quantity=record.quantity,
+                            )
                     else:
-                        _LOGGER.warning("Failed to compute refill price for %s after %s fill at %s",
-                                      opposite_side.value, side.value, self._format_price(record.price))
+                        _LOGGER.warning(
+                            "Failed to compute refill price for %s after %s fill at %s",
+                            opposite_side.value,
+                            side.value,
+                            self._format_price(record.price),
+                        )
         if respawn_level is not None:
             _LOGGER.info("Refilling %s order at %s after %s fill", respawn_level.side.value, self._format_price(respawn_level.price), side.value)
             if not self._order_exists(respawn_level.side, respawn_level.price):
@@ -874,6 +898,7 @@ class AsterMVPGridBot:
         health_interval = 10.0
         maintenance_interval = max(60.0, self.cfg.kill_switch_ms / 1000.0)
         last_health_time = 0
+        last_maintenance_time = 0
 
         while not self._stop.is_set():
             current_time = time.time()
@@ -886,23 +911,29 @@ class AsterMVPGridBot:
             await asyncio.sleep(1.0)  # 每1秒检查一次
 
             # 原来的maintenance检查（降低频率）
-            if current_time - last_health_time >= maintenance_interval:
+            if current_time - last_maintenance_time >= maintenance_interval:
                 if not self.state or not self.grid_layout:
+                    last_maintenance_time = current_time
                     continue
                 async with self._order_lock:
                     snapshot = list(self.state.open_orders.values())
                 if not snapshot:
                     _LOGGER.warning("Maintenance: no resting orders; restarting grid")
                     await self._restart_grid("maintenance-empty")
+                    last_maintenance_time = current_time
                     continue
                 has_sell = any(rec.side is GridSide.SELL for rec in snapshot)
                 has_buy = any(rec.side is GridSide.BUY for rec in snapshot)
                 if not has_sell:
                     _LOGGER.warning("Maintenance: sell side empty; restarting grid")
                     await self._restart_grid("maintenance-missing-sells")
+                    last_maintenance_time = current_time
                 elif not has_buy:
                     _LOGGER.warning("Maintenance: buy side empty; restarting grid")
                     await self._restart_grid("maintenance-missing-buys")
+                    last_maintenance_time = current_time
+                else:
+                    last_maintenance_time = current_time
 
     async def _cancel_all_orders(self, ignore_errors: bool = False) -> None:
         if not self.state:

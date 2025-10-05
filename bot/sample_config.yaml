@@ -14,6 +14,7 @@ max_resting_orders_per_side: 20
 max_concurrent_positions_per_side: 18
 kill_switch_ms: 1800000
 log_level: INFO
+log_file: logs/aster-grid.log
 rest_base: https://fapi.asterdex.com
 ws_market: wss://fstream.asterdex.com
 ws_user: wss://fstream.asterdex.com
